@@ -1,0 +1,56 @@
+# Project Rules
+
+## Read First
+Before any task, read these files if they exist:
+- ROADMAP.md - What we're building
+- ARCHITECTURE.md - How it's structured
+- CONVENTIONS.md - Code style
+- PHASE_*_TASKS.md - Current tasks (find highest number)
+
+## Three Scripts
+This project uses three shell scripts as the source of truth:
+
+| Script | Purpose | Success |
+|--------|---------|---------|
+| `./init.sh` | Setup from fresh clone | Exit 0 = ready to develop |
+| `./test.sh` | Run all checks | Exit 0 = safe to deploy |
+| `./run.sh` | Start dev environment | Shows running services |
+
+## Workflow
+
+### Before Starting
+1. Read the documentation files listed above
+2. Run `./test.sh` to confirm project is healthy
+
+### During Development
+1. Make small, incremental changes
+2. After each change: `./test.sh --quick`
+3. Fix failures before continuing
+4. Never leave tests broken
+
+### After Completing Work
+1. Run full `./test.sh`
+2. Update checkboxes in PHASE_*_TASKS.md
+3. Ensure project is deployable
+
+## Rules
+
+### Do
+- Keep the project deployable at all times
+- Follow patterns in ARCHITECTURE.md
+- Follow style in CONVENTIONS.md
+- Test after every significant change
+- Update docs when you change behavior
+
+### Don't
+- Skip reading documentation
+- Make large changes without testing between
+- Leave `./test.sh` failing
+- Add code that contradicts existing patterns
+- Assume context from previous sessions
+
+## When Stuck
+1. Re-read ARCHITECTURE.md for the relevant pattern
+2. Check CONVENTIONS.md for style guidance
+3. Look at existing code for examples
+4. Ask for clarification rather than guessing
