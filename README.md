@@ -1,147 +1,59 @@
-# General Project Template
+# Screenshot Analyzer
 
-A stack-agnostic project template with standardized scripts for initialization, development, and testing.
+Batch analyze screenshots using Claude Vision API. Auto-categorizes by source app, content type, extracts text, and stores structured metadata in SQLite.
 
-## Quick Start
-
+## Setup
 ```bash
-# 1. Initialize the project (install dependencies)
 ./scripts/init.sh
-
-# 2. Run tests to verify everything works
-./scripts/test.sh
-
-# 3. Start the development server
-./scripts/run.sh
+export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-## Scripts
-
-All scripts are located in the `scripts/` directory and auto-detect your project's tech stack.
-
-### `./scripts/init.sh`
-
-Sets up the development environment from a fresh clone.
-
+## Usage
 ```bash
-./scripts/init.sh              # Full initialization
-./scripts/init.sh --no-clean   # Skip cleanup step (faster)
-./scripts/init.sh --help       # Show help
+# Test on 10 images first
+python src/analyzer.py /Users/pieterdejong/screenshots --limit 10
+
+# Run on everything (~$15-30 for 1,659 images)
+python src/analyzer.py /Users/pieterdejong/screenshots
+
+# Custom output location
+python src/analyzer.py /path/to/screenshots --output ./results
 ```
 
-**What it does:**
-- Detects project stacks (Python, Node.js, Rust, Go, Docker)
-- Cleans existing build artifacts
-- Creates virtual environments
-- Installs all dependencies
+## Output
 
-### `./scripts/run.sh`
+Creates `_analysis/` folder in target directory with:
+- `screenshots.db` - SQLite database
+- `screenshots.json` - Full export
 
-Starts the development environment.
-
+## Querying Results
 ```bash
-./scripts/run.sh               # Start all services
-./scripts/run.sh backend       # Start backend only
-./scripts/run.sh frontend      # Start frontend only
-./scripts/run.sh docker        # Start with Docker Compose
-./scripts/run.sh --help        # Show help
+# Breakdown by source app
+sqlite3 _analysis/screenshots.db "SELECT source_app, COUNT(*) FROM screenshots GROUP BY source_app ORDER BY 2 DESC"
+
+# Find Instagram posts
+sqlite3 _analysis/screenshots.db "SELECT filename, description FROM screenshots WHERE source_app='instagram'"
+
+# Search by topic
+sqlite3 _analysis/screenshots.db "SELECT filename, topics FROM screenshots WHERE topics LIKE '%finance%'"
+
+# Full-text search in extracted text
+sqlite3 _analysis/screenshots.db "SELECT filename, primary_text FROM screenshots WHERE primary_text LIKE '%error%'"
 ```
 
-**Environment variables:**
-- `BACKEND_PORT` - Backend server port (default: 8000)
-- `FRONTEND_PORT` - Frontend dev server port (default: 5173)
+## Schema
 
-### `./scripts/test.sh`
+| Field | Type | Description |
+|-------|------|-------------|
+| source_app | text | instagram, twitter, slack, terminal, browser, etc. |
+| content_type | text | social_post, conversation, code, receipt, etc. |
+| primary_text | text | Extracted text (first 500 chars) |
+| people_mentioned | json | @handles and names |
+| topics | json | Up to 5 topic tags |
+| description | text | 1-2 sentence summary |
+| confidence | real | 0.0-1.0 |
 
-Runs tests, linting, and type checking.
+## Cost
 
-```bash
-./scripts/test.sh              # Run all checks
-./scripts/test.sh --quick      # Fast mode (skip type-check, format)
-./scripts/test.sh backend      # Backend tests only
-./scripts/test.sh frontend     # Frontend tests only
-./scripts/test.sh lint         # Linting only
-./scripts/test.sh format       # Format checking only
-./scripts/test.sh type-check   # Type checking only
-./scripts/test.sh --help       # Show help
-```
+~$0.01-0.02 per image using Claude Sonnet.
 
-**Exit codes:**
-- `0` - All checks passed (safe to deploy)
-- `1` - One or more checks failed
-
-## Supported Stacks
-
-The scripts automatically detect and support:
-
-| Stack | Detection | Init | Run | Test |
-|-------|-----------|------|-----|------|
-| Python | `requirements.txt`, `pyproject.toml` | venv + pip | uvicorn/flask/django | pytest |
-| Node.js | `package.json` | npm/yarn/pnpm | dev script | vitest/jest |
-| Rust | `Cargo.toml` | cargo build | cargo run | cargo test |
-| Go | `go.mod` | go mod download | go run | go test |
-| Docker | `Dockerfile`, `docker-compose.yml` | docker compose build | docker compose up | - |
-
-## Configuration
-
-Create `scripts/project.conf` to customize behavior:
-
-```bash
-# Project name (used in logs)
-PROJECT_NAME="My Project"
-
-# Override auto-detection
-ENABLE_PYTHON=true      # auto | true | false
-ENABLE_NODE=true
-
-# Directory locations
-PYTHON_DIR="backend"
-NODE_DIR="frontend"
-
-# Package manager
-NODE_PACKAGE_MANAGER="pnpm"   # npm | yarn | pnpm
-
-# Ports
-BACKEND_PORT=8000
-FRONTEND_PORT=3000
-
-# Custom commands
-RUN_PYTHON_CMD="uvicorn main:app --reload"
-TEST_PYTHON_CMD="pytest -v"
-```
-
-See `scripts/project.conf` for all available options.
-
-## Project Structure
-
-```
-your-project/
-├── scripts/
-│   ├── _common.sh      # Shared utilities
-│   ├── project.conf    # Configuration (optional)
-│   ├── init.sh         # Setup script
-│   ├── run.sh          # Dev server script
-│   └── test.sh         # Test suite script
-├── backend/            # Python/Rust/Go code (optional)
-├── frontend/           # Node.js code (optional)
-└── README.md
-```
-
-## Workflow
-
-### Before Starting Work
-1. Read project documentation (ROADMAP.md, ARCHITECTURE.md, etc.)
-2. Run `./scripts/test.sh` to confirm project is healthy
-
-### During Development
-1. Make small, incremental changes
-2. After each change: `./scripts/test.sh --quick`
-3. Fix failures before continuing
-
-### After Completing Work
-1. Run full `./scripts/test.sh`
-2. Ensure all checks pass before committing
-
-## License
-
-MIT
