@@ -12,7 +12,7 @@ Batch analyze screenshots using local vision models. Auto-categorizes by source 
 - **Fast** — 6 parallel workers, aggressive resizing (~50 images/sec)
 - **GPU acceleration** — Uses MPS (Apple Silicon) or CUDA automatically
 - **Structured output** — SQLite database + JSON export + HTML report
-- **Resume support** — Skips already-analyzed images
+- **Resume support** — Skips already-analyzed images (use `--no-skip-existing` to force re-analysis)
 
 ## Setup
 
@@ -48,6 +48,9 @@ python src/analyzer.py /path/to/screenshots --dry-run
 
 # Custom output location
 python src/analyzer.py /path/to/screenshots --output ./results
+
+# Re-analyze all images (populate new fields after schema changes)
+python src/analyzer.py /path/to/screenshots --no-skip-existing
 ```
 
 ## Backends

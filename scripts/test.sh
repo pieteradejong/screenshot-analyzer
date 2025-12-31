@@ -15,6 +15,7 @@
 #   format      Run format checking only
 #   type-check  Run type checking only
 #   health      Verify health check endpoints
+#   db-verify   Verify database schema and data integrity
 #
 # Options:
 #   --quick     Skip slow checks (type-check, format)
@@ -51,6 +52,7 @@ show_help() {
     echo "  format      Run format checking only"
     echo "  type-check  Run type checking only"
     echo "  health      Verify health check endpoints"
+    echo "  db-verify   Verify database schema and data integrity"
     echo ""
     echo "Options:"
     echo "  --quick     Skip slow checks (type-check, format)"
@@ -66,7 +68,7 @@ MODE="all"
 
 for arg in "$@"; do
     case $arg in
-        backend|frontend|lint|format|type-check|health|all)
+        backend|frontend|lint|format|type-check|health|db-verify|all)
             MODE="$arg"
             ;;
         --quick|-q)
@@ -546,6 +548,55 @@ run_go_format() {
 }
 
 # =============================================================================
+# DATABASE VERIFICATION
+# =============================================================================
+
+run_database_verify() {
+    local python_dir=$(get_python_dir)
+    local venv_path=$(get_venv_path)
+    
+    if [ ! -d "$venv_path" ]; then
+        return 1
+    fi
+    
+    log_header "Database Verification"
+    
+    source "$venv_path/bin/activate"
+    
+    # Look for database in common locations (relative to project root)
+    local db_path=""
+    if [ -f "$PROJECT_ROOT/analysis/screenshots.db" ]; then
+        db_path="$PROJECT_ROOT/analysis/screenshots.db"
+    elif [ -f "$PROJECT_ROOT/_analysis/screenshots.db" ]; then
+        db_path="$PROJECT_ROOT/_analysis/screenshots.db"
+    elif [ -n "$(find "$PROJECT_ROOT" -maxdepth 3 -name 'screenshots.db' -type f 2>/dev/null | head -1)" ]; then
+        db_path=$(find "$PROJECT_ROOT" -maxdepth 3 -name 'screenshots.db' -type f 2>/dev/null | head -1)
+    else
+        log_warn "No screenshots.db found. Skipping database verification"
+        log_info "Run analyzer first to create a database, or use: python scripts/verify_db.py --db /path/to/screenshots.db"
+        deactivate
+        return 0
+    fi
+    
+    if [ ! -f "scripts/verify_db.py" ]; then
+        log_warn "scripts/verify_db.py not found. Skipping database verification"
+        deactivate
+        return 1
+    fi
+    
+    log_step "Verifying database: $db_path"
+    if python scripts/verify_db.py --db "$db_path" --limit 5; then
+        log_success "Database verification passed"
+    else
+        log_error "Database verification failed or database has issues"
+        EXIT_CODE=1
+    fi
+    
+    deactivate
+    echo ""
+}
+
+# =============================================================================
 # HEALTH CHECK TESTS
 # =============================================================================
 
@@ -846,12 +897,20 @@ case $MODE in
         run_health_checks
         ;;
     
+    db-verify)
+        run_database_verify
+        ;;
+    
     all|*)
         run_all_tests
         run_all_lint
         if [ "$QUICK_MODE" = false ]; then
             run_all_format
             run_all_typecheck
+        fi
+        # Database verification is informational, run it if database exists
+        if is_python_enabled; then
+            run_database_verify || true  # Don't fail if no database
         fi
         ;;
 esac

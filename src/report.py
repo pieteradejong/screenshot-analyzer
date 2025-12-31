@@ -52,6 +52,32 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             color: #888;
             margin-bottom: 20px;
         }}
+
+        .tabs {{
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }}
+
+        .tab-btn {{
+            padding: 8px 14px;
+            border: none;
+            border-radius: 999px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+            background: #0f3460;
+            color: #fff;
+        }}
+
+        .tab-btn:hover {{
+            background: #1a5490;
+        }}
+
+        .tab-btn.active {{
+            background: #e94560;
+        }}
         
         .filters {{
             display: flex;
@@ -333,6 +359,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <body>
     <h1>Screenshot Analysis Report</h1>
     <p class="stats">{stats}</p>
+
+    <div class="tabs">
+        <button class="tab-btn active" data-tab="all" onclick="setTab('all', this)">
+            All ({total_count})
+        </button>
+        <button class="tab-btn" data-tab="people" onclick="setTab('people', this)">
+            People ({has_people_count})
+        </button>
+    </div>
     
     <div class="filters">
         <input type="text" class="search-box" id="search" placeholder="Search descriptions...">
@@ -381,12 +416,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         const cardData = {card_data_json};
         
         // Filter state
+        let activeTab = 'all';
         let activeApp = null;
         let activeType = null;
         let activeFeature = null;
         let searchQuery = '';
         
         // Filter functions
+        function setTab(tab, btn) {{
+            activeTab = tab;
+            updateFilters();
+            updateButtonStates();
+        }}
+
         function filterByApp(app, btn) {{
             activeApp = activeApp === app ? null : app;
             updateFilters();
@@ -416,6 +458,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }}
         
         function updateButtonStates() {{
+            document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {{
+                btn.classList.toggle('active', btn.dataset.tab === activeTab);
+            }});
             document.querySelectorAll('.filter-btn[data-app]').forEach(btn => {{
                 btn.classList.toggle('active', btn.dataset.app === activeApp);
             }});
@@ -432,6 +477,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             let visible = 0;
             
             cards.forEach(card => {{
+                const matchesTab =
+                    activeTab === 'all' ||
+                    (activeTab === 'people' && card.dataset.hasPeople === '1');
                 const matchesApp = !activeApp || card.dataset.app === activeApp;
                 const matchesType = !activeType || card.dataset.type === activeType;
                 const matchesSearch = !searchQuery || 
@@ -446,7 +494,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     matchesFeature = card.dataset.hasPeople === '1';
                 }}
                 
-                if (matchesApp && matchesType && matchesSearch && matchesFeature) {{
+                if (matchesTab && matchesApp && matchesType && matchesSearch && matchesFeature) {{
                     card.classList.remove('hidden');
                     visible++;
                 }} else {{
@@ -631,6 +679,7 @@ def generate_report(db_path: Path, output_path: Path) -> None:
     app_counts = get_app_counts(screenshots)
     type_counts = get_type_counts(screenshots)
     stats = f"{len(screenshots)} screenshots analyzed"
+    total_count = len(screenshots)
 
     # Count feature stats
     has_text_count = sum(1 for s in screenshots if s.get("has_text"))
@@ -722,6 +771,7 @@ def generate_report(db_path: Path, output_path: Path) -> None:
         card_data_json=json.dumps(card_data),
         has_text_count=has_text_count,
         has_people_count=has_people_count,
+        total_count=total_count,
     )
 
     # Write file

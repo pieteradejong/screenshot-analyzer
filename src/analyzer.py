@@ -359,13 +359,13 @@ Examples:
         "--skip-existing",
         action="store_true",
         default=True,
-        help="Skip already analyzed files (default: true)",
+        help="Skip already analyzed files (default: true). Use --no-skip-existing to re-analyze and populate new fields.",
     )
     parser.add_argument(
         "--no-skip-existing",
         action="store_false",
         dest="skip_existing",
-        help="Re-analyze all files",
+        help="Re-analyze all files, even if already in database. Use this to populate new fields (e.g., has_people) for existing rows after schema migrations.",
     )
     parser.add_argument(
         "--remove-deleted",
