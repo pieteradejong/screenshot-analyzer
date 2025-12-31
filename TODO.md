@@ -53,6 +53,13 @@
 
 ## Later
 
+- **Cloud Processing** (experimental module ready in `experiments/modal/`)
+  - Modal GPU deployment for fire-and-forget execution
+  - ~2x faster with NVIDIA T4 vs Apple MPS
+  - Webhook callbacks when complete
+  - Setup: `pip install modal && modal setup && modal deploy experiments/modal/app.py`
+  - Usage: `python experiments/modal/trigger.py ~/screenshots --callback URL`
+
 - **Pipeline**
   - Optional embeddings for semantic search.
 
