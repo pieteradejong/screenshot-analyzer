@@ -1,436 +1,48 @@
 #!/usr/bin/env python3
 """
-Screenshot Analyzer - Batch process screenshots using local OCR
-Outputs structured metadata to SQLite + JSON
+Screenshot Analyzer - Batch process screenshots using local vision models.
+
+Supports multiple backends:
+- ocr: EasyOCR + regex heuristics (fast, low memory)
+- vlm: Vision-Language Model (smart, higher memory)
+
+Performance optimizations:
+- Smart image resizing (MAX_DIM=1600) for faster OCR
+- Multiprocessing with separate model per worker
+- GPU acceleration via MPS (Apple Silicon) or CUDA
 
 Usage:
     python analyzer.py /path/to/screenshots
     python analyzer.py /path/to/screenshots --limit 10
+    python analyzer.py /path/to/screenshots --workers 4
+    python analyzer.py /path/to/screenshots --backend vlm
 """
 
-import easyocr
+import argparse
 import json
+import multiprocessing as mp
+import os
 import sqlite3
 import sys
-import re
-import argparse
-from pathlib import Path
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
-from PIL import Image
+from datetime import datetime
+from pathlib import Path
 
 SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
-# Initialize EasyOCR reader (done lazily to avoid loading on --help)
-_reader = None
-
-
-def get_reader(verbose: bool = False) -> easyocr.Reader:
-    """Get or create EasyOCR reader (singleton)."""
-    global _reader
-    if _reader is None:
-        if verbose:
-            print("Initializing EasyOCR (first run downloads models)...")
-        _reader = easyocr.Reader(["en"], gpu=False, verbose=verbose)
-        if verbose:
-            print("EasyOCR ready.")
-    return _reader
+# Default number of workers (use CPU count, but cap at 4 to avoid memory issues)
+DEFAULT_WORKERS = min(os.cpu_count() or 1, 4)
 
 
 # =============================================================================
-# HEURISTIC CLASSIFIERS
-# =============================================================================
-
-# Patterns for source_app detection
-APP_PATTERNS = {
-    "twitter": [
-        r"\bretweet\b",
-        r"\btweet\b",
-        r"\blikes?\b.*\bretweets?\b",
-        r"\breplies\b",
-        r"@\w+.*\d+[hm]\b",  # @username 2h ago pattern
-        r"\bfollow\b.*\bfollowing\b",
-    ],
-    "instagram": [
-        r"\blikes?\b",
-        r"\bcomments?\b",
-        r"\bfollowers?\b",
-        r"\bfollowing\b",
-        r"\bstory\b",
-        r"\breels?\b",
-        r"\binstagram\b",
-    ],
-    "slack": [
-        r"\bslack\b",
-        r"#[a-z0-9_-]+",  # channel names
-        r"\bthread\b",
-        r"\breply in thread\b",
-        r"\bedited\b.*\bago\b",
-    ],
-    "discord": [
-        r"\bdiscord\b",
-        r"#[a-z0-9_-]+",
-        r"\bserver\b.*\bmembers?\b",
-        r"\bonline\b.*\bmembers?\b",
-    ],
-    "whatsapp": [
-        r"\bwhatsapp\b",
-        r"\bdelivered\b",
-        r"\bread\b.*\breceipts?\b",
-        r"\blast seen\b",
-    ],
-    "messages": [
-        r"\bimessage\b",
-        r"\bdelivered\b",
-        r"\bread\b",
-        r"\btoday\b.*\d{1,2}:\d{2}",
-    ],
-    "email": [
-        r"\bfrom:\b",
-        r"\bto:\b",
-        r"\bsubject:\b",
-        r"\binbox\b",
-        r"\bsent\b.*\bmail\b",
-        r"\breply\b.*\bforward\b",
-    ],
-    "terminal": [
-        r"\$\s+\w+",  # shell prompt
-        r"^\s*\w+@\w+:",  # user@host:
-        r"\bcommand not found\b",
-        r"\bexit\b.*\bcode\b",
-    ],
-    "vscode": [
-        r"\bvs\s*code\b",
-        r"\bextensions?\b",
-        r"\bproblems?\b.*\boutput\b",
-        r"\bdebug console\b",
-        r"\bterminal\b.*\boutput\b",
-    ],
-    "browser": [
-        r"https?://",
-        r"\bsearch\b.*\bgoogle\b",
-        r"\bbookmarks?\b",
-        r"\btabs?\b.*\bwindow\b",
-        r"\bprivate\b.*\bbrowsing\b",
-    ],
-    "finder": [
-        r"\bfinder\b",
-        r"\bdesktop\b",
-        r"\bdocuments?\b",
-        r"\bdownloads?\b",
-        r"\bapplications?\b",
-        r"\bitems?\b.*\bavailable\b",
-    ],
-}
-
-# Patterns for content_type detection
-CONTENT_PATTERNS = {
-    "code": [
-        r"\bdef\s+\w+\s*\(",
-        r"\bfunction\s+\w+\s*\(",
-        r"\bclass\s+\w+",
-        r"\bimport\s+\w+",
-        r"\bfrom\s+\w+\s+import\b",
-        r"\bconst\s+\w+\s*=",
-        r"\blet\s+\w+\s*=",
-        r"\bvar\s+\w+\s*=",
-        r"=>\s*\{",
-        r"\breturn\s+",
-        r"```",
-    ],
-    "receipt": [
-        r"\$\d+\.\d{2}",
-        r"\btotal\b",
-        r"\bsubtotal\b",
-        r"\btax\b",
-        r"\breceipt\b",
-        r"\border\b.*\b#?\d+",
-        r"\bpayment\b",
-        r"\bcard\b.*\b\d{4}\b",
-    ],
-    "conversation": [
-        r"\d{1,2}:\d{2}\s*(am|pm)?",  # timestamps
-        r"\bsent\b",
-        r"\bdelivered\b",
-        r"\bread\b",
-        r"\btyping\b",
-        r"\bonline\b",
-    ],
-    "error_message": [
-        r"\berror\b",
-        r"\bfailed\b",
-        r"\bexception\b",
-        r"\bwarning\b",
-        r"\bcritical\b",
-        r"\btraceback\b",
-        r"\bstack\s*trace\b",
-    ],
-    "article": [
-        r"\bread\s*more\b",
-        r"\bshare\b",
-        r"\bpublished\b",
-        r"\bauthor\b",
-        r"\bmin\s*read\b",
-        r"\bcomments?\s*\(\d+\)",
-    ],
-    "settings": [
-        r"\bsettings?\b",
-        r"\bpreferences?\b",
-        r"\boptions?\b",
-        r"\bconfigure\b",
-        r"\benable\b",
-        r"\bdisable\b",
-        r"\btoggle\b",
-    ],
-    "dashboard": [
-        r"\bdashboard\b",
-        r"\banalytics?\b",
-        r"\bmetrics?\b",
-        r"\bstatistics?\b",
-        r"\boverview\b",
-        r"\d+%",
-    ],
-    "form": [
-        r"\bsubmit\b",
-        r"\bcancel\b",
-        r"\brequired\b",
-        r"\benter\s+your\b",
-        r"\bpassword\b",
-        r"\bemail\b.*\baddress\b",
-    ],
-    "social_post": [
-        r"\blikes?\b",
-        r"\bcomments?\b",
-        r"\bshares?\b",
-        r"\bretweets?\b",
-        r"\bfollowers?\b",
-    ],
-}
-
-
-def classify_source_app(text: str) -> tuple[str, float]:
-    """Classify the source app based on extracted text patterns."""
-    text_lower = text.lower()
-    scores = {}
-
-    for app, patterns in APP_PATTERNS.items():
-        score = 0
-        for pattern in patterns:
-            matches = len(re.findall(pattern, text_lower, re.IGNORECASE))
-            score += matches
-        if score > 0:
-            scores[app] = score
-
-    if not scores:
-        return "unknown", 0.3
-
-    best_app = max(scores, key=scores.get)
-    # Normalize confidence (cap at 1.0)
-    confidence = min(scores[best_app] / 5.0, 1.0)
-    return best_app, round(confidence, 2)
-
-
-def classify_content_type(text: str) -> tuple[str, float]:
-    """Classify the content type based on extracted text patterns."""
-    text_lower = text.lower()
-    scores = {}
-
-    for content_type, patterns in CONTENT_PATTERNS.items():
-        score = 0
-        for pattern in patterns:
-            matches = len(re.findall(pattern, text_lower, re.IGNORECASE))
-            score += matches
-        if score > 0:
-            scores[content_type] = score
-
-    if not scores:
-        # Default based on text length
-        if len(text) < 50:
-            return "photo", 0.3
-        elif len(text) > 500:
-            return "article", 0.4
-        return "unknown", 0.3
-
-    best_type = max(scores, key=scores.get)
-    confidence = min(scores[best_type] / 5.0, 1.0)
-    return best_type, round(confidence, 2)
-
-
-def detect_language(text: str) -> str:
-    """Simple language detection based on character patterns."""
-    if not text:
-        return "unknown"
-
-    # Very basic heuristics
-    if re.search(r"[\u4e00-\u9fff]", text):
-        return "zh"
-    if re.search(r"[\u3040-\u309f\u30a0-\u30ff]", text):
-        return "ja"
-    if re.search(r"[\uac00-\ud7af]", text):
-        return "ko"
-    if re.search(r"[áéíóúñ¿¡]", text, re.IGNORECASE):
-        return "es"
-    if re.search(r"[àâçéèêëïîôùûü]", text, re.IGNORECASE):
-        return "fr"
-    if re.search(r"[äöüß]", text, re.IGNORECASE):
-        return "de"
-    if re.search(r"[ïëéèüáó]", text, re.IGNORECASE):
-        return "nl"
-
-    return "en"
-
-
-def detect_sentiment(text: str) -> str:
-    """Simple sentiment detection based on keywords."""
-    text_lower = text.lower()
-
-    positive = len(
-        re.findall(
-            r"\b(great|awesome|love|excellent|amazing|good|happy|thanks|beautiful|perfect)\b",
-            text_lower,
-        )
-    )
-    negative = len(
-        re.findall(
-            r"\b(error|failed|bad|terrible|awful|hate|angry|sad|broken|wrong|issue|problem)\b",
-            text_lower,
-        )
-    )
-
-    if positive > negative:
-        return "positive"
-    elif negative > positive:
-        return "negative"
-    elif positive > 0 and negative > 0:
-        return "mixed"
-    return "neutral"
-
-
-def extract_people(text: str) -> list[str]:
-    """Extract @mentions and potential names from text."""
-    mentions = re.findall(r"@(\w+)", text)
-    return list(set(mentions))[:10]  # Limit to 10
-
-
-def extract_topics(text: str, source_app: str, content_type: str) -> list[str]:
-    """Extract topic tags from text and classifications."""
-    topics = []
-
-    # Add source and content as topics
-    if source_app != "unknown":
-        topics.append(source_app)
-    if content_type != "unknown":
-        topics.append(content_type)
-
-    # Extract hashtags
-    hashtags = re.findall(r"#(\w+)", text)
-    topics.extend(hashtags[:3])
-
-    # Look for common topic keywords
-    text_lower = text.lower()
-    topic_keywords = [
-        "finance",
-        "tech",
-        "programming",
-        "design",
-        "music",
-        "travel",
-        "food",
-        "sports",
-        "news",
-        "gaming",
-        "ai",
-        "crypto",
-        "startup",
-        "health",
-    ]
-    for keyword in topic_keywords:
-        if keyword in text_lower:
-            topics.append(keyword)
-
-    return list(set(topics))[:5]
-
-
-def generate_description(
-    text: str, source_app: str, content_type: str, has_text: bool
-) -> str:
-    """Generate a brief description of the screenshot."""
-    if not has_text:
-        return f"Screenshot from {source_app}, appears to be {content_type} content with no readable text."
-
-    # Get first meaningful sentence or chunk
-    sentences = re.split(r"[.!?\n]", text)
-    preview = ""
-    for s in sentences:
-        s = s.strip()
-        if len(s) > 20:
-            preview = s[:100]
-            break
-
-    if preview:
-        return f"{source_app.title()} {content_type}: {preview}..."
-    return f"Screenshot from {source_app} showing {content_type} content."
-
-
-# =============================================================================
-# CORE ANALYSIS
+# DATABASE
 # =============================================================================
 
 
-def analyze_image(reader: easyocr.Reader, path: Path, verbose: bool = False) -> dict:
-    """Analyze image using EasyOCR and heuristics."""
-    try:
-        # Get image info
-        with Image.open(path) as img:
-            width, height = img.size
-
-        # Extract text with EasyOCR
-        results = reader.readtext(str(path))
-
-        # Combine all detected text
-        text_parts = [result[1] for result in results]
-        full_text = " ".join(text_parts)
-        has_text = len(full_text.strip()) > 0
-
-        # Classify
-        source_app, app_confidence = classify_source_app(full_text)
-        content_type, type_confidence = classify_content_type(full_text)
-        language = detect_language(full_text)
-        sentiment = detect_sentiment(full_text)
-        people = extract_people(full_text)
-        topics = extract_topics(full_text, source_app, content_type)
-        description = generate_description(
-            full_text, source_app, content_type, has_text
-        )
-
-        # Average confidence
-        confidence = round((app_confidence + type_confidence) / 2, 2)
-
-        return {
-            "source_app": source_app,
-            "content_type": content_type,
-            "has_text": has_text,
-            "primary_text": full_text[:500] if full_text else None,
-            "people_mentioned": people,
-            "topics": topics,
-            "language": language,
-            "sentiment": sentiment,
-            "description": description,
-            "confidence": confidence,
-            "image_width": width,
-            "image_height": height,
-        }
-
-    except Exception as e:
-        if verbose:
-            print(f"  Error analyzing {path.name}: {e}")
-        return {"error": str(e)}
-
-
-def init_db(db_path: Path) -> sqlite3.Connection:
-    """Initialize SQLite database with schema."""
+def init_db(db_path: Path, verbose: bool = False) -> sqlite3.Connection:
+    """Initialize SQLite database with schema and migrate if needed."""
     conn = sqlite3.connect(db_path)
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS screenshots (
             id INTEGER PRIMARY KEY,
@@ -451,10 +63,30 @@ def init_db(db_path: Path) -> sqlite3.Connection:
             confidence REAL,
             image_width INTEGER,
             image_height INTEGER,
+            backend TEXT,
             raw_response TEXT,
             error TEXT
         )
     """)
+
+    # Migrate: add missing columns for older databases
+    cursor = conn.execute("PRAGMA table_info(screenshots)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    migrations = []
+    if "image_width" not in existing_cols:
+        conn.execute("ALTER TABLE screenshots ADD COLUMN image_width INTEGER")
+        migrations.append("image_width")
+    if "image_height" not in existing_cols:
+        conn.execute("ALTER TABLE screenshots ADD COLUMN image_height INTEGER")
+        migrations.append("image_height")
+    if "backend" not in existing_cols:
+        conn.execute("ALTER TABLE screenshots ADD COLUMN backend TEXT")
+        migrations.append("backend")
+
+    if migrations and verbose:
+        print(f"  Migrated database: added columns {migrations}")
+
     conn.execute("CREATE INDEX IF NOT EXISTS idx_source_app ON screenshots(source_app)")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_content_type ON screenshots(content_type)"
@@ -464,7 +96,7 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def save_result(conn: sqlite3.Connection, filepath: Path, analysis: dict):
+def save_result(conn: sqlite3.Connection, filepath: Path, analysis: dict, backend: str):
     """Save analysis result to database."""
     stat = filepath.stat()
 
@@ -474,8 +106,8 @@ def save_result(conn: sqlite3.Connection, filepath: Path, analysis: dict):
         (filepath, filename, file_size, file_modified, analyzed_at,
          source_app, content_type, has_text, primary_text, people_mentioned,
          topics, language, sentiment, description, confidence, 
-         image_width, image_height, raw_response, error)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         image_width, image_height, backend, raw_response, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
         (
             str(filepath),
@@ -495,14 +127,14 @@ def save_result(conn: sqlite3.Connection, filepath: Path, analysis: dict):
             analysis.get("confidence"),
             analysis.get("image_width"),
             analysis.get("image_height"),
+            backend,
             json.dumps(analysis),
             analysis.get("error"),
         ),
     )
-    conn.commit()
 
 
-def find_images(root: Path, skip_analyzed: set[str] = None) -> list[Path]:
+def find_images(root: Path, skip_analyzed: set[str] | None = None) -> list[Path]:
     """Recursively find all supported image files."""
     skip_analyzed = skip_analyzed or set()
     images = []
@@ -521,9 +153,53 @@ def get_already_analyzed(conn: sqlite3.Connection) -> set[str]:
     return {row[0] for row in cursor.fetchall()}
 
 
+# =============================================================================
+# BACKEND FACTORY
+# =============================================================================
+
+
+def get_backend(name: str):
+    """Get the appropriate backend by name."""
+    from backends import OCRBackend, VLM_AVAILABLE, VLMBackend
+
+    if name == "ocr":
+        return OCRBackend()
+    elif name == "vlm":
+        if not VLM_AVAILABLE:
+            print("Error: VLM backend requires 'transformers' package.")
+            print("Install with: pip install transformers accelerate")
+            sys.exit(1)
+        return VLMBackend()
+    else:
+        print(f"Error: Unknown backend '{name}'. Use 'ocr' or 'vlm'.")
+        sys.exit(1)
+
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Analyze screenshots with local OCR (EasyOCR)"
+        description="Analyze screenshots with local vision models",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"""
+Backends:
+  ocr   EasyOCR + regex heuristics (fast, ~2GB memory per worker)
+  vlm   Vision-Language Model (smart, ~4-8GB memory)
+
+Performance:
+  --workers controls parallel processing (default: {DEFAULT_WORKERS})
+  Each worker loads its own model (~2GB RAM each)
+  Images are resized to max 1600px for faster OCR
+
+Examples:
+  %(prog)s /path/to/screenshots
+  %(prog)s /path/to/screenshots --workers 4
+  %(prog)s /path/to/screenshots --limit 10 --backend ocr
+  %(prog)s /path/to/screenshots --backend vlm
+""",
     )
     parser.add_argument("directory", type=Path, help="Directory containing screenshots")
     parser.add_argument(
@@ -531,18 +207,48 @@ def main():
     )
     parser.add_argument("--limit", type=int, help="Limit number of images to process")
     parser.add_argument(
+        "--backend",
+        choices=["ocr", "vlm"],
+        default="ocr",
+        help="Analysis backend (default: ocr)",
+    )
+    parser.add_argument(
         "--skip-existing",
         action="store_true",
         default=True,
         help="Skip already analyzed files (default: true)",
     )
     parser.add_argument(
+        "--no-skip-existing",
+        action="store_false",
+        dest="skip_existing",
+        help="Re-analyze all files",
+    )
+    parser.add_argument(
         "--workers",
+        "-j",
         type=int,
-        default=1,
-        help="Parallel workers (default: 1, OCR is CPU-heavy)",
+        default=DEFAULT_WORKERS,
+        help=f"Parallel workers (default: {DEFAULT_WORKERS}, each uses ~2GB RAM)",
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Show debug info")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Count images and estimate time without processing",
+    )
+    parser.add_argument(
+        "--html",
+        action="store_true",
+        default=True,
+        help="Generate HTML report (default: true)",
+    )
+    parser.add_argument(
+        "--no-html",
+        action="store_false",
+        dest="html",
+        help="Skip HTML report generation",
+    )
 
     args = parser.parse_args()
 
@@ -551,23 +257,51 @@ def main():
         print(f"Error: {args.directory} is not a directory")
         sys.exit(1)
 
-    # Initialize OCR
+    # Debug info
     if args.verbose:
         print("=== Debug Info ===")
         print(f"  Directory: {args.directory}")
+        print(f"  Backend: {args.backend}")
         print(f"  Workers: {args.workers}")
+        print(f"  Dry run: {args.dry_run}")
         print()
-
-    reader = get_reader(verbose=args.verbose)
 
     # Setup output
     output_dir = args.output or args.directory / "_analysis"
+
+    # For dry-run, we don't need to create output dir or init backend
+    if args.dry_run:
+        all_images = find_images(args.directory)
+        if args.limit:
+            all_images = all_images[: args.limit]
+
+        # Estimate time based on backend and workers
+        if args.backend == "ocr":
+            # With resizing: ~0.1-0.2s per image per worker
+            time_per_img = 0.15
+        else:
+            time_per_img = 3.0
+
+        est_time = (len(all_images) * time_per_img) / args.workers
+
+        print("=== Dry Run ===")
+        print(f"  Directory: {args.directory}")
+        print(f"  Backend: {args.backend}")
+        print(f"  Workers: {args.workers}")
+        print(f"  Total images found: {len(all_images)}")
+        print(f"  Would process: {len(all_images)} images")
+        print(f"  Estimated time: ~{est_time / 60:.0f} minutes")
+        print(f"  Output would be: {output_dir}")
+        print()
+        print("Run without --dry-run to process.")
+        return
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     db_path = output_dir / "screenshots.db"
     json_path = output_dir / "screenshots.json"
 
-    conn = init_db(db_path)
+    conn = init_db(db_path, verbose=args.verbose)
 
     # Find images to process
     skip_set = get_already_analyzed(conn) if args.skip_existing else set()
@@ -577,12 +311,21 @@ def main():
         images = images[: args.limit]
 
     print(f"Found {len(images)} images to analyze")
+    print(f"Backend: {args.backend}")
+    print(f"Workers: {args.workers}")
     print(f"Output: {output_dir}")
     print(f"Database: {db_path}")
     print()
 
     if not images:
-        print("Nothing to process.")
+        print("Nothing new to process.")
+        # Still generate report from existing data if --html
+        if args.html:
+            report_path = output_dir / "report.html"
+            from report import generate_report
+
+            generate_report(db_path, report_path)
+            print(f"HTML report: {report_path}")
         return
 
     # Process images
@@ -590,42 +333,119 @@ def main():
     errors = 0
     start_time = time.time()
 
-    def process_one(img_path: Path) -> tuple[Path, dict]:
-        result = analyze_image(reader, img_path, verbose=args.verbose)
-        return img_path, result
+    # Determine GPU usage
+    from backends.base import get_device
 
-    # Note: EasyOCR is not thread-safe by default, so we use 1 worker
-    # For parallel processing, each worker would need its own reader
-    with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = {executor.submit(process_one, img): img for img in images}
+    device = get_device()
+    use_gpu = device.type in ("mps", "cuda")
 
-        for future in as_completed(futures):
-            img_path, result = future.result()
-            save_result(conn, img_path, result)
+    print(f"Device: {device}")
+    print(f"Initializing {args.workers} worker(s)...")
+    print()
+
+    if args.backend == "ocr" and args.workers > 1:
+        # Use multiprocessing for OCR backend
+        from backends.ocr import analyze_image_standalone
+
+        # Prepare arguments for each image
+        work_items = [(str(img), use_gpu, args.verbose) for img in images]
+
+        # Use spawn method to avoid issues with forking
+        ctx = mp.get_context("spawn")
+
+        with ctx.Pool(processes=args.workers) as pool:
+            # Process with imap_unordered for better progress reporting
+            for path_str, result in pool.imap_unordered(
+                analyze_image_standalone, work_items, chunksize=10
+            ):
+                img_path = Path(path_str)
+                save_result(conn, img_path, result, args.backend)
+
+                processed += 1
+                elapsed = time.time() - start_time
+                rate = processed / elapsed if elapsed > 0 else 0
+                eta = (len(images) - processed) / rate if rate > 0 else 0
+                pct = int(processed / len(images) * 100)
+
+                if result.get("error"):
+                    errors += 1
+                    error_msg = result["error"]
+                    print(f"✗ [{processed}/{len(images)}] {img_path.name}")
+                    print(f"  ERROR: {error_msg[:80]}")
+                else:
+                    source = result.get("source_app", "unknown")
+                    ctype = result.get("content_type", "unknown")
+                    conf = result.get("confidence", 0)
+                    has_text = result.get("has_text", False)
+                    text_preview = ""
+                    if has_text and result.get("primary_text"):
+                        text_preview = result["primary_text"][:50].replace("\n", " ")
+                        text_preview = f' "{text_preview}..."'
+
+                    print(f"✓ [{processed}/{len(images)}] {img_path.name}")
+                    print(f"  → {source} / {ctype} (conf: {conf:.0%}){text_preview}")
+
+                # Progress line (less frequent to reduce noise)
+                if processed % 50 == 0 or processed == len(images):
+                    errors_str = f", {errors} failed" if errors > 0 else ""
+                    print(
+                        f"  ── {pct}% done | {rate:.1f}/s | ~{eta / 60:.0f}m remaining{errors_str}"
+                    )
+                    print()
+
+                # Batch commit every 100 images
+                if processed % 100 == 0:
+                    conn.commit()
+
+        # Final commit
+        conn.commit()
+
+    else:
+        # Single-process mode (for VLM or --workers 1)
+        backend = get_backend(args.backend)
+        backend.initialize()
+
+        for img_path in images:
+            result = backend.analyze(img_path, verbose=args.verbose)
+            save_result(conn, img_path, result, args.backend)
 
             processed += 1
-            if result.get("error"):
-                errors += 1
-                error_msg = result["error"]
-                if args.verbose:
-                    status = f"ERROR: {error_msg}"
-                else:
-                    status = (
-                        f"ERROR: {error_msg[:50]}..."
-                        if len(error_msg) > 50
-                        else f"ERROR: {error_msg}"
-                    )
-            else:
-                status = f"{result.get('source_app', '?')} / {result.get('content_type', '?')}"
-
             elapsed = time.time() - start_time
             rate = processed / elapsed if elapsed > 0 else 0
             eta = (len(images) - processed) / rate if rate > 0 else 0
+            pct = int(processed / len(images) * 100)
 
-            print(f"[{processed}/{len(images)}] {img_path.name[:40]:<40} → {status}")
-            print(
-                f"         Rate: {rate:.2f}/s | ETA: {eta / 60:.1f}m | Errors: {errors}"
-            )
+            if result.get("error"):
+                errors += 1
+                error_msg = result["error"]
+                print(f"✗ [{processed}/{len(images)}] {img_path.name}")
+                print(f"  ERROR: {error_msg[:80]}")
+            else:
+                source = result.get("source_app", "unknown")
+                ctype = result.get("content_type", "unknown")
+                conf = result.get("confidence", 0)
+                has_text = result.get("has_text", False)
+                text_preview = ""
+                if has_text and result.get("primary_text"):
+                    text_preview = result["primary_text"][:50].replace("\n", " ")
+                    text_preview = f' "{text_preview}..."'
+
+                print(f"✓ [{processed}/{len(images)}] {img_path.name}")
+                print(f"  → {source} / {ctype} (conf: {conf:.0%}){text_preview}")
+
+            # Progress line
+            if processed % 10 == 0 or processed == len(images):
+                errors_str = f", {errors} failed" if errors > 0 else ""
+                print(
+                    f"  ── {pct}% done | {rate:.1f}/s | ~{eta / 60:.0f}m remaining{errors_str}"
+                )
+                print()
+
+            # Batch commit
+            if processed % 100 == 0:
+                conn.commit()
+
+        conn.commit()
 
     # Export to JSON
     cursor = conn.execute("SELECT * FROM screenshots")
@@ -635,10 +455,24 @@ def main():
     with open(json_path, "w") as f:
         json.dump(rows, f, indent=2)
 
+    # Generate HTML report
+    report_path = output_dir / "report.html"
+    if args.html:
+        from report import generate_report
+
+        generate_report(db_path, report_path)
+
+    elapsed_total = time.time() - start_time
+    rate_final = processed / elapsed_total if elapsed_total > 0 else 0
+
     print()
     print(f"Done! Processed {processed} images ({errors} errors)")
+    print(f"Time: {elapsed_total / 60:.1f} minutes ({rate_final:.1f} images/sec)")
+    print(f"Backend: {args.backend}")
     print(f"Database: {db_path}")
     print(f"JSON export: {json_path}")
+    if args.html:
+        print(f"HTML report: {report_path}")
     print()
     print("Query examples:")
     print(

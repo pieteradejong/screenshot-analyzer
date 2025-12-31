@@ -23,7 +23,8 @@ source "$SCRIPT_DIR/_common.sh"
 # ARGUMENT PARSING
 # =============================================================================
 
-SKIP_CLEAN=false
+SKIP_CLEAN=true   # Default: don't clean (idempotent)
+FORCE_REINSTALL=false
 
 show_help() {
     echo "Usage: $0 [OPTIONS]"
@@ -31,18 +32,29 @@ show_help() {
     echo "Initialize the project development environment."
     echo ""
     echo "Options:"
-    echo "  --no-clean    Skip cleanup of existing artifacts"
+    echo "  --force       Force reinstall (clean and rebuild everything)"
+    echo "  --clean       Clean existing artifacts before installing"
     echo "  --help        Show this help message"
     echo ""
-    echo "This script will:"
-    echo "  1. Detect project stacks (Python, Node.js, Rust, Go, Docker)"
-    echo "  2. Clean existing build artifacts (unless --no-clean)"
-    echo "  3. Install dependencies for each detected stack"
+    echo "By default, this script is idempotent:"
+    echo "  - Skips venv creation if it already exists"
+    echo "  - Skips dependency install if packages are present"
+    echo ""
+    echo "Use --force to start fresh."
     exit 0
 }
 
 for arg in "$@"; do
     case $arg in
+        --force|-f)
+            FORCE_REINSTALL=true
+            SKIP_CLEAN=false
+            shift
+            ;;
+        --clean)
+            SKIP_CLEAN=false
+            shift
+            ;;
         --no-clean)
             SKIP_CLEAN=true
             shift
@@ -146,33 +158,61 @@ if is_python_enabled; then
     local_python_dir=$(get_python_dir)
     local_requirements=$(get_python_requirements)
     
-    # Create virtual environment
-    log_step "Creating virtual environment..."
-    python3 -m venv "$local_venv"
-    log_success "Virtual environment created at $local_venv"
+    # Check if virtual environment already exists
+    if [ "$FORCE_REINSTALL" = false ] && [ -d "$local_venv" ] && [ -f "$local_venv/bin/activate" ]; then
+        log_info "Virtual environment already exists at $local_venv"
+        VENV_EXISTED=true
+    else
+        # Create virtual environment
+        log_step "Creating virtual environment..."
+        python3 -m venv "$local_venv"
+        log_success "Virtual environment created at $local_venv"
+        VENV_EXISTED=false
+    fi
     
-    # Activate and install
-    log_step "Installing Python dependencies..."
+    # Activate venv
     source "$local_venv/bin/activate"
     
-    # Upgrade pip
-    pip install --upgrade pip --quiet
+    # Check if dependencies are already installed (skip check if --force)
+    DEPS_INSTALLED=false
+    if [ "$FORCE_REINSTALL" = false ] && [ "$VENV_EXISTED" = true ]; then
+        if [ -n "$local_requirements" ] && [ -f "$local_requirements" ]; then
+            # Check if all requirements are satisfied
+            if pip freeze 2>/dev/null | grep -q .; then
+                # Quick check: see if key packages are installed
+                if pip show easyocr &>/dev/null && pip show torch &>/dev/null; then
+                    log_info "Python dependencies appear to be installed"
+                    DEPS_INSTALLED=true
+                fi
+            fi
+        fi
+    fi
     
-    # Install from requirements or pyproject.toml
-    if [ -n "$INIT_PYTHON_CMD" ]; then
-        eval "$INIT_PYTHON_CMD"
-    elif [ -n "$local_requirements" ] && [ -f "$local_requirements" ]; then
-        pip install -r "$local_requirements"
-    elif [ -f "$local_python_dir/pyproject.toml" ]; then
-        pip install -e "$local_python_dir"
-    elif [ -f "$PROJECT_ROOT/pyproject.toml" ]; then
-        pip install -e "$PROJECT_ROOT"
+    if [ "$DEPS_INSTALLED" = false ]; then
+        log_step "Installing Python dependencies..."
+        
+        # Upgrade pip
+        pip install --upgrade pip --quiet
+        
+        # Install from requirements or pyproject.toml
+        if [ -n "$INIT_PYTHON_CMD" ]; then
+            eval "$INIT_PYTHON_CMD"
+        elif [ -n "$local_requirements" ] && [ -f "$local_requirements" ]; then
+            pip install -r "$local_requirements"
+        elif [ -f "$local_python_dir/pyproject.toml" ]; then
+            pip install -e "$local_python_dir"
+        elif [ -f "$PROJECT_ROOT/pyproject.toml" ]; then
+            pip install -e "$PROJECT_ROOT"
+        else
+            log_warn "No requirements.txt or pyproject.toml found"
+        fi
+        
+        log_success "Python dependencies installed"
     else
-        log_warn "No requirements.txt or pyproject.toml found"
+        log_success "Python environment ready (no changes needed)"
     fi
     
     deactivate
-    log_success "Python dependencies installed"
     echo ""
 fi
 

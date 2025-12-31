@@ -1,5 +1,13 @@
+# Core dependencies
 easyocr>=1.7.0
 torch>=2.0.0
 pillow>=10.0.0
+
+# Optional: VLM backend (install if using --backend vlm)
+# pip install transformers accelerate
+transformers>=4.40.0
+accelerate>=0.30.0
+
+# Development
 ruff>=0.8.0
 pytest>=8.0.0

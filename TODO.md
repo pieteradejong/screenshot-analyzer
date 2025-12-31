@@ -1,32 +1,34 @@
 # TODO
 
+## Completed
+
+- [x] **Local Vision Backends** — Replaced Claude API with local backends:
+  - `ocr` — EasyOCR + regex heuristics (fast, ~2GB memory)
+  - `vlm` — Vision-Language Model/Moondream2 (smart, ~4-8GB memory)
+- [x] **GPU Acceleration** — MPS (Apple Silicon) / CUDA auto-detection
+- [x] **Backend Abstraction** — Pluggable `backends/` module structure
+- [x] **CLI `--backend` flag** — Choose between `ocr` and `vlm`
+- [x] **CLI `--no-skip-existing`** — Re-analyze all files
+- [x] **CLI `--dry-run`** — Count images, estimate time
+- [x] **`--output` nested paths** — mkdir parents automatically
+- [x] **Documentation** — Updated README.md, created ARCHITECTURE.md, CONVENTIONS.md
+- [x] **Secrets Cleanup** — Removed API key requirement
+- [x] **image_width/height** — Added to schema and output
+- [x] **Quality gates** — pytest test suite, ruff lint/format
+- [x] **HTML Report** — Self-contained report.html with filtering, search, modal
+- [x] **Easy run.sh** — Default directory via `SCREENSHOT_DIR` or `~/Pictures`
+- [x] **Performance: Smart Image Resizing** — MAX_DIM=1600, MIN_SCALE=0.5
+- [x] **Performance: Multiprocessing** — Separate EasyOCR reader per worker
+- [x] **Performance: Batch SQLite Commits** — Commit every 100 rows
+
 ## Now (doing in this pass)
 
 - **Secrets**
-  - **Add `.env.example`** with `ANTHROPIC_API_KEY=...` template.
-  - **Load `.env` automatically** in `scripts/run.sh` (safe parsing; no `grep | xargs`).
-  - **Update `.gitignore`** to ignore analyzer outputs (e.g. `_analysis/`, `*.db`, exports).
+  - **Load `.env` automatically** in `scripts/run.sh` (safe parsing).
+  - **Update `.gitignore`** to ignore analyzer outputs (`_analysis/`, `*.db`).
 
 - **Docs / entrypoints**
-  - Fix `README.md` (remove stray heredoc line, align paths/commands).
-  - Add root `./init.sh`, `./test.sh`, `./run.sh` wrappers that delegate to `scripts/*` (matches repo “source of truth” rules).
-  - Fix `src/analyzer.py` docstring examples (file name).
-
-- **CLI correctness**
-  - Fix `--skip-existing` so it can be disabled (`--no-skip-existing`).
-  - Make `--output` work for nested paths (mkdir parents).
-
-- **Reliability / cost safety**
-  - Add retries with capped exponential backoff + jitter for transient Anthropic failures (429/5xx/timeouts).
-  - Add configurable timeout and retry knobs.
-  - Make API client usage thread-safe (client per thread via thread-local).
-
-- **Performance**
-  - Batch SQLite writes in transactions (commit every N rows) instead of per-row commits.
-
-- **Quality gates**
-  - Add `ruff` (lint+format) + `pytest` (offline unit tests).
-  - Update `scripts/project.conf` so `scripts/test.sh` runs pytest instead of only `--help`.
+  - Root `./init.sh`, `./test.sh`, `./run.sh` wrappers already exist.
 
 ## Next (near-term)
 
@@ -35,21 +37,23 @@
   - Add `--resume-errors` / reprocess failed rows.
 
 - **UX**
-  - Add `--dry-run` (count images, estimate cost).
   - Add `--include/--exclude` glob filters.
-  - Add `--model` flag and document supported models.
+  - Add `--model` flag to select VLM model.
 
 - **Metadata**
-  - Add `image_width/height` and basic EXIF timestamps if available.
+  - Add basic EXIF timestamps if available.
   - Add a stable content hash to detect moved/renamed duplicates.
+
+- **Additional VLM models**
+  - Qwen2-VL-2B
+  - LLaVA-1.5-7B
+  - Hybrid backend (OCR + VLM)
 
 ## Later
 
 - **Pipeline**
-  - Optional OCR fallback for low-confidence text extraction.
   - Optional embeddings for semantic search.
 
 - **Packaging**
   - Turn into an installable package + `screenshot-analyzer` console script.
   - Add CI (GitHub Actions) running `./test.sh`.
-
