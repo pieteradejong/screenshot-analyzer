@@ -15,6 +15,8 @@ import time
 import warnings
 from pathlib import Path
 
+import cv2
+import numpy as np
 from PIL import Image
 
 from .base import AnalysisBackend, get_device
@@ -38,6 +40,66 @@ MIN_SCALE = 0.5
 # File size filters (skip non-screenshot files)
 MIN_FILE_SIZE = 10 * 1024  # 10KB - skip tiny icons/thumbnails
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB - skip photos/videos
+
+# Face detection settings
+FACE_DETECT_MAX_DIM = 600  # Downscale for faster face detection
+
+# Load OpenCV's Haar cascade for face detection (lazy loaded)
+_face_cascade = None
+
+
+def _get_face_cascade():
+    """Lazily load the Haar cascade for face detection."""
+    global _face_cascade
+    if _face_cascade is None:
+        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        _face_cascade = cv2.CascadeClassifier(cascade_path)
+    return _face_cascade
+
+
+def detect_faces(image_bytes: bytes) -> bool:
+    """
+    Detect if there are faces (people) in the image using OpenCV Haar cascade.
+
+    Args:
+        image_bytes: JPEG-encoded image bytes
+
+    Returns:
+        True if at least one face is detected, False otherwise
+    """
+    try:
+        # Decode image from bytes
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            return False
+
+        # Convert to grayscale
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # Downscale for faster detection
+        height, width = gray.shape
+        max_dim = max(height, width)
+        if max_dim > FACE_DETECT_MAX_DIM:
+            scale = FACE_DETECT_MAX_DIM / max_dim
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            gray = cv2.resize(gray, (new_width, new_height))
+
+        # Detect faces
+        cascade = _get_face_cascade()
+        faces = cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(30, 30),
+        )
+
+        return len(faces) > 0
+
+    except Exception:
+        # On any error, fail safely and return False
+        return False
 
 
 def prepare_image_for_ocr(path: Path) -> tuple[bytes, int, int, bool]:
@@ -472,6 +534,9 @@ class OCRBackend(AnalysisBackend):
             full_text = " ".join(text_parts)
             has_text = len(full_text.strip()) > 0
 
+            # Detect faces (people) in the image
+            has_people = detect_faces(image_bytes)
+
             # Classify
             source_app, app_confidence = classify_source_app(full_text)
             content_type, type_confidence = classify_content_type(full_text)
@@ -489,6 +554,7 @@ class OCRBackend(AnalysisBackend):
                 "source_app": source_app,
                 "content_type": content_type,
                 "has_text": has_text,
+                "has_people": has_people,
                 "primary_text": full_text[:500] if full_text else None,
                 "people_mentioned": people,
                 "topics": topics,
@@ -553,6 +619,9 @@ def analyze_image_standalone(args: tuple) -> tuple[str, dict]:
         full_text = " ".join(text_parts)
         has_text = len(full_text.strip()) > 0
 
+        # Detect faces (people) in the image
+        has_people = detect_faces(image_bytes)
+
         # Classify
         source_app, app_confidence = classify_source_app(full_text)
         content_type, type_confidence = classify_content_type(full_text)
@@ -570,6 +639,7 @@ def analyze_image_standalone(args: tuple) -> tuple[str, dict]:
             "source_app": source_app,
             "content_type": content_type,
             "has_text": has_text,
+            "has_people": has_people,
             "primary_text": full_text[:500] if full_text else None,
             "people_mentioned": people,
             "topics": topics,

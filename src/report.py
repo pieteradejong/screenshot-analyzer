@@ -176,6 +176,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .badge-vscode {{ background: #007acc; color: #fff; }}
         .badge-browser {{ background: #ff7139; color: #fff; }}
         .badge-email {{ background: #ea4335; color: #fff; }}
+        .badge-people {{ background: #9c27b0; color: #fff; }}
         
         .card-title {{
             font-size: 13px;
@@ -346,6 +347,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             {type_filters}
         </div>
         
+        <div class="filter-group">
+            <span class="filter-label">Features:</span>
+            <button class="filter-btn" data-feature="has_text" onclick="filterByFeature('has_text', this)">Has Text ({has_text_count})</button>
+            <button class="filter-btn" data-feature="has_people" onclick="filterByFeature('has_people', this)">Has People ({has_people_count})</button>
+        </div>
+        
         <button class="filter-btn" onclick="clearFilters()">Clear All</button>
     </div>
     
@@ -376,6 +383,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         // Filter state
         let activeApp = null;
         let activeType = null;
+        let activeFeature = null;
         let searchQuery = '';
         
         // Filter functions
@@ -391,9 +399,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             updateButtonStates();
         }}
         
+        function filterByFeature(feature, btn) {{
+            activeFeature = activeFeature === feature ? null : feature;
+            updateFilters();
+            updateButtonStates();
+        }}
+        
         function clearFilters() {{
             activeApp = null;
             activeType = null;
+            activeFeature = null;
             searchQuery = '';
             document.getElementById('search').value = '';
             updateFilters();
@@ -406,6 +421,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             }});
             document.querySelectorAll('.filter-btn[data-type]').forEach(btn => {{
                 btn.classList.toggle('active', btn.dataset.type === activeType);
+            }});
+            document.querySelectorAll('.filter-btn[data-feature]').forEach(btn => {{
+                btn.classList.toggle('active', btn.dataset.feature === activeFeature);
             }});
         }}
         
@@ -420,7 +438,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     card.dataset.description.toLowerCase().includes(searchQuery) ||
                     card.dataset.text.toLowerCase().includes(searchQuery);
                 
-                if (matchesApp && matchesType && matchesSearch) {{
+                // Feature filter (has_text, has_people)
+                let matchesFeature = true;
+                if (activeFeature === 'has_text') {{
+                    matchesFeature = card.dataset.hasText === '1';
+                }} else if (activeFeature === 'has_people') {{
+                    matchesFeature = card.dataset.hasPeople === '1';
+                }}
+                
+                if (matchesApp && matchesType && matchesSearch && matchesFeature) {{
                     card.classList.remove('hidden');
                     visible++;
                 }} else {{
@@ -464,6 +490,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <div class="meta-value">${{data.image_width || '?'}} × ${{data.image_height || '?'}}</div>
                 </div>
                 <div class="meta-item">
+                    <div class="meta-label">Has Text</div>
+                    <div class="meta-value">${{data.has_text ? 'Yes' : 'No'}}</div>
+                </div>
+                <div class="meta-item">
+                    <div class="meta-label">Has People</div>
+                    <div class="meta-value">${{data.has_people ? 'Yes' : 'No'}}</div>
+                </div>
+                <div class="meta-item">
                     <div class="meta-label">Language</div>
                     <div class="meta-value">${{data.language || 'Unknown'}}</div>
                 </div>
@@ -476,8 +510,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <div class="meta-value topics">${{(data.topics || []).map(t => `<span class="topic">${{t}}</span>`).join('')}}</div>
                 </div>
                 <div class="meta-item">
-                    <div class="meta-label">People</div>
+                    <div class="meta-label">People Mentioned</div>
                     <div class="meta-value">${{(data.people_mentioned || []).map(p => '@' + p).join(', ') || 'None'}}</div>
+                </div>
+                <div class="meta-item" style="grid-column: 1 / -1;">
+                    <div class="meta-label">File Path (click to copy)</div>
+                    <div class="meta-value" style="font-family: monospace; cursor: pointer; user-select: all;" 
+                         onclick="navigator.clipboard.writeText(${{JSON.stringify(data.raw_filepath)}}).then(() => this.style.color = '#4da8da'); setTimeout(() => this.style.color = '', 1000);"
+                         title="Click to copy">${{data.raw_filepath || 'Unknown'}}</div>
                 </div>
             `;
             
@@ -504,6 +544,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 CARD_TEMPLATE = """
 <div class="card" data-id="{id}" data-app="{source_app}" data-type="{content_type}" 
      data-description="{description_escaped}" data-text="{text_escaped}"
+     data-has-text="{has_text}" data-has-people="{has_people}"
      onclick="openModal({id})">
     <img class="card-image" src="{image_url}" alt="{filename}" loading="lazy"
          onerror="this.style.display='none'">
@@ -511,6 +552,7 @@ CARD_TEMPLATE = """
         <div class="card-badges">
             <span class="badge badge-app badge-{source_app}">{source_app}</span>
             <span class="badge badge-type">{content_type}</span>
+            {people_badge}
         </div>
         <div class="card-title">{filename}</div>
         <div class="card-description">{description}</div>
@@ -590,6 +632,10 @@ def generate_report(db_path: Path, output_path: Path) -> None:
     type_counts = get_type_counts(screenshots)
     stats = f"{len(screenshots)} screenshots analyzed"
 
+    # Count feature stats
+    has_text_count = sum(1 for s in screenshots if s.get("has_text"))
+    has_people_count = sum(1 for s in screenshots if s.get("has_people"))
+
     # Generate filter buttons
     app_filters = " ".join(
         f'<button class="filter-btn" data-app="{app}" onclick="filterByApp(\'{app}\', this)">'
@@ -617,6 +663,15 @@ def generate_report(db_path: Path, output_path: Path) -> None:
         else:
             image_url = ""
 
+        # has_text and has_people as 1/0 for data attributes
+        has_text = 1 if s.get("has_text") else 0
+        has_people = 1 if s.get("has_people") else 0
+
+        # Generate people badge if has_people
+        people_badge = (
+            '<span class="badge badge-people">👤 people</span>' if has_people else ""
+        )
+
         card = CARD_TEMPLATE.format(
             id=sid,
             source_app=s.get("source_app") or "unknown",
@@ -631,6 +686,9 @@ def generate_report(db_path: Path, output_path: Path) -> None:
             ),
             image_url=image_url,
             confidence_pct=int((s.get("confidence") or 0) * 100),
+            has_text=has_text,
+            has_people=has_people,
+            people_badge=people_badge,
         )
         cards.append(card)
 
@@ -638,6 +696,7 @@ def generate_report(db_path: Path, output_path: Path) -> None:
         card_data[sid] = {
             "id": sid,
             "filepath": image_url,
+            "raw_filepath": filepath,
             "filename": s.get("filename"),
             "source_app": s.get("source_app"),
             "content_type": s.get("content_type"),
@@ -650,6 +709,8 @@ def generate_report(db_path: Path, output_path: Path) -> None:
             "people_mentioned": s.get("people_mentioned") or [],
             "image_width": s.get("image_width"),
             "image_height": s.get("image_height"),
+            "has_text": bool(has_text),
+            "has_people": bool(has_people),
         }
 
     # Generate final HTML
@@ -659,6 +720,8 @@ def generate_report(db_path: Path, output_path: Path) -> None:
         type_filters=type_filters,
         cards="\n".join(cards),
         card_data_json=json.dumps(card_data),
+        has_text_count=has_text_count,
+        has_people_count=has_people_count,
     )
 
     # Write file

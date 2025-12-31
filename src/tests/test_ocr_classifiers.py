@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from backends.ocr import (
     classify_content_type,
     classify_source_app,
+    detect_faces,
     detect_language,
     detect_sentiment,
     extract_people,
@@ -219,3 +220,47 @@ class TestGenerateDescription:
         desc = generate_description(text, "browser", "article", has_text=True)
         # Should truncate to ~100 chars for preview
         assert len(desc) < 200
+
+
+class TestDetectFaces:
+    """Tests for face detection helper."""
+
+    def test_detect_faces_returns_bool(self):
+        """Test that detect_faces returns a boolean."""
+        # Create a simple solid color image (no faces)
+        import io
+
+        from PIL import Image
+
+        img = Image.new("RGB", (100, 100), color="white")
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG")
+        image_bytes = buffer.getvalue()
+
+        result = detect_faces(image_bytes)
+        assert isinstance(result, bool)
+
+    def test_detect_faces_no_face_image(self):
+        """Test that detect_faces returns False for an image without faces."""
+        import io
+
+        from PIL import Image
+
+        # Create a simple gradient image (no faces)
+        img = Image.new("RGB", (200, 200), color="blue")
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG")
+        image_bytes = buffer.getvalue()
+
+        result = detect_faces(image_bytes)
+        assert result is False
+
+    def test_detect_faces_handles_invalid_bytes(self):
+        """Test that detect_faces fails safely on invalid image bytes."""
+        result = detect_faces(b"not an image")
+        assert result is False
+
+    def test_detect_faces_handles_empty_bytes(self):
+        """Test that detect_faces fails safely on empty bytes."""
+        result = detect_faces(b"")
+        assert result is False

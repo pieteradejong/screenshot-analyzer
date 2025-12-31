@@ -141,6 +141,7 @@ class VLMBackend(AnalysisBackend):
             result.setdefault("sentiment", "neutral")
             result.setdefault("description", "Screenshot analyzed by VLM")
             result.setdefault("confidence", 0.5)
+            result.setdefault("has_people", False)
 
             return result
 

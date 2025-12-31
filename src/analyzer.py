@@ -107,7 +107,8 @@ def init_db(db_path: Path, verbose: bool = False) -> sqlite3.Connection:
             image_height INTEGER,
             backend TEXT,
             raw_response TEXT,
-            error TEXT
+            error TEXT,
+            has_people INTEGER
         )
     """)
 
@@ -125,6 +126,9 @@ def init_db(db_path: Path, verbose: bool = False) -> sqlite3.Connection:
     if "backend" not in existing_cols:
         conn.execute("ALTER TABLE screenshots ADD COLUMN backend TEXT")
         migrations.append("backend")
+    if "has_people" not in existing_cols:
+        conn.execute("ALTER TABLE screenshots ADD COLUMN has_people INTEGER")
+        migrations.append("has_people")
 
     if migrations and verbose:
         print(f"  Migrated database: added columns {migrations}")
@@ -148,8 +152,8 @@ def save_result(conn: sqlite3.Connection, filepath: Path, analysis: dict, backen
         (filepath, filename, file_size, file_modified, analyzed_at,
          source_app, content_type, has_text, primary_text, people_mentioned,
          topics, language, sentiment, description, confidence, 
-         image_width, image_height, backend, raw_response, error)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         image_width, image_height, backend, raw_response, error, has_people)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
         (
             str(filepath),
@@ -172,6 +176,7 @@ def save_result(conn: sqlite3.Connection, filepath: Path, analysis: dict, backen
             backend,
             json.dumps(analysis),
             analysis.get("error"),
+            1 if analysis.get("has_people") else 0,
         ),
     )
 
@@ -233,6 +238,51 @@ def get_already_analyzed(conn: sqlite3.Connection) -> set[str]:
     """Get set of filepaths already in database."""
     cursor = conn.execute("SELECT filepath FROM screenshots WHERE error IS NULL")
     return {row[0] for row in cursor.fetchall()}
+
+
+def cleanup_deleted_files(
+    conn: sqlite3.Connection,
+    source_directories: list[Path],
+    remove_from_db: bool = False,
+    verbose: bool = False,
+) -> int:
+    """
+    Check database records against filesystem and mark deleted files.
+
+    Args:
+        conn: Database connection
+        source_directories: Directories that were scanned (for context)
+        remove_from_db: If True, delete records; if False, mark with error
+        verbose: Print details about deleted files
+
+    Returns:
+        Number of deleted files found
+    """
+    cursor = conn.execute("SELECT filepath FROM screenshots WHERE error IS NULL")
+    db_paths = {row[0] for row in cursor.fetchall()}
+
+    deleted_count = 0
+    for filepath_str in db_paths:
+        filepath = Path(filepath_str)
+        if not filepath.exists():
+            if remove_from_db:
+                conn.execute(
+                    "DELETE FROM screenshots WHERE filepath = ?", (filepath_str,)
+                )
+            else:
+                conn.execute(
+                    "UPDATE screenshots SET error = ? WHERE filepath = ?",
+                    (f"File deleted: {filepath_str}", filepath_str),
+                )
+            deleted_count += 1
+            if verbose:
+                action = "Removed" if remove_from_db else "Marked as deleted"
+                print(f"  {action}: {filepath.name}")
+
+    if deleted_count > 0:
+        conn.commit()
+
+    return deleted_count
 
 
 # =============================================================================
@@ -316,6 +366,11 @@ Examples:
         action="store_false",
         dest="skip_existing",
         help="Re-analyze all files",
+    )
+    parser.add_argument(
+        "--remove-deleted",
+        action="store_true",
+        help="Remove deleted files from database instead of marking them",
     )
     parser.add_argument(
         "--workers",
@@ -422,6 +477,20 @@ Examples:
 
     # Find images to process
     skip_set = get_already_analyzed(conn) if args.skip_existing else set()
+
+    # Check for deleted files if skipping existing
+    if args.skip_existing:
+        deleted_count = cleanup_deleted_files(
+            conn,
+            source_directories,
+            remove_from_db=args.remove_deleted,
+            verbose=args.verbose,
+        )
+        if deleted_count > 0:
+            action = "removed from" if args.remove_deleted else "marked in"
+            print(f"Found {deleted_count} deleted files ({action} database)")
+            print()
+
     images, skipped_small, skipped_large = find_images(source_directories, skip_set)
 
     if args.limit:
