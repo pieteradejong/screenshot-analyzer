@@ -38,6 +38,7 @@
   - Add `--resume-errors` / reprocess failed rows.
 
 - **UX**
+  - Add `--quality` flag to toggle speed vs accuracy mode.
   - Add `--include/--exclude` glob filters.
   - Add `--model` flag to select VLM model.
 

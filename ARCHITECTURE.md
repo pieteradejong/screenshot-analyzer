@@ -373,6 +373,44 @@ This reduces disk I/O overhead by ~20%.
 3. Default workers increased from 4 → 6
 4. File size filtering (skip <10KB and >10MB)
 
+### Speed vs Accuracy
+
+The default configuration prioritizes **speed** for batch processing. To increase **accuracy** when needed:
+
+| Setting | Speed Mode (default) | Accuracy Mode |
+|---------|---------------------|---------------|
+| MAX_DIMENSION | 1200px | 1600px |
+| JPEG quality | 80% | 90% |
+| Workers | 6 | 1-2 |
+| File size filter | ON | OFF |
+
+**When to use Speed Mode** (default):
+- Initial batch processing of large collections
+- Quick categorization pass
+- Limited time budget
+
+**When to use Accuracy Mode**:
+- Re-processing specific files that failed classification
+- Screenshots with small text (terminal, code)
+- Final pass after initial triage
+
+**How to switch to Accuracy Mode**:
+
+1. Edit `src/backends/ocr.py`:
+   ```python
+   MAX_DIMENSION = 1600  # Was 1200
+   # In prepare_image_for_ocr(), change quality to 90
+   ```
+
+2. Run with fewer workers and no file filter:
+   ```bash
+   python src/analyzer.py /path --workers 2 --no-skip-existing
+   ```
+
+3. For comprehensive coverage (include all file sizes), modify `find_images()` call in `analyzer.py` to pass `filter_size=False`.
+
+**Future**: Add `--quality` flag to toggle these settings from CLI.
+
 ## HTML Report
 
 The analyzer generates a self-contained HTML report (`report.html`) with:

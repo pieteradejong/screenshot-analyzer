@@ -199,6 +199,18 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # Skip photos (>10MB)
 
 This avoids loading and processing files that won't yield useful results.
 
+### Speed vs Accuracy Trade-off
+
+Default settings prioritize speed for batch processing:
+
+```python
+MAX_DIMENSION = 1200  # Speed (use 1600 for accuracy)
+JPEG_QUALITY = 80     # Speed (use 90 for accuracy)
+DEFAULT_WORKERS = 6   # Speed (use 1-2 for accuracy)
+```
+
+See ARCHITECTURE.md for when to use each mode.
+
 ### Multiprocessing vs Threading
 
 Use **multiprocessing** for CPU-bound ML tasks:
