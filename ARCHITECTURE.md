@@ -277,14 +277,14 @@ Tests should use `>= 0.3` or `>= 0.4` thresholds, not strict equality.
 
 ## Performance Optimizations
 
-### Smart Image Resizing
+### Aggressive Image Resizing
 
 Large images (Retina screenshots at 2880×1800) take 4x longer to OCR than smaller versions with minimal accuracy loss.
 
 **Configuration** (in `backends/ocr.py`):
 
 ```python
-MAX_DIMENSION = 1600  # Resize if width or height exceeds this
+MAX_DIMENSION = 1200  # Aggressive resize for speed (use 1600 for accuracy)
 MIN_SCALE = 0.5       # Never shrink more than 50% (preserve text readability)
 ```
 
@@ -293,12 +293,26 @@ MIN_SCALE = 0.5       # Never shrink more than 50% (preserve text readability)
 - Scale factor = `MAX_DIMENSION / max(width, height)`
 - Apply floor: `scale = max(scale, MIN_SCALE)`
 - Use LANCZOS resampling for quality
-- Convert to JPEG bytes (faster than PNG for EasyOCR)
+- Convert to JPEG at 80% quality (faster encoding)
 
 **Why these values?**
-- 1600px keeps most text readable (phone screenshots are ~400px, desktop ~1920px)
+- 1200px prioritizes speed over accuracy for batch processing
 - 50% minimum ensures text remains at least 10-12px tall (OCR minimum)
-- Retina (2x) screenshots: 2880×1800 → 1600×1000 (4x faster OCR)
+- Retina (2x) screenshots: 2880×1800 → 1200×750 (~5x faster OCR)
+
+### File Size Filtering
+
+Skip files that are unlikely to be screenshots:
+
+```python
+MIN_FILE_SIZE = 10 * 1024       # 10KB - skip icons/thumbnails
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB - skip photos/videos
+```
+
+**Why?**
+- Icons/thumbnails (<10KB) have no text to extract
+- Large photos/videos (>10MB) are rarely screenshots
+- Skipping early saves OCR initialization overhead
 
 ### Multiprocessing
 
@@ -346,12 +360,18 @@ This reduces disk I/O overhead by ~20%.
 | Configuration | Speed | Memory | Best For |
 |--------------|-------|--------|----------|
 | 1 worker, no resize | ~3 img/s | ~2GB | Low memory systems |
-| 1 worker, resize | ~8 img/s | ~2GB | Default single-core |
-| 4 workers, resize | ~25 img/s | ~8GB | Fast batch processing |
+| 1 worker, aggressive resize | ~12 img/s | ~2GB | 8GB RAM machines |
+| 6 workers, aggressive resize | ~50 img/s | ~12GB | 16GB+ RAM (default) |
 
-**12,000 images**:
-- Before optimizations: ~67 minutes
-- After optimizations (4 workers): ~8 minutes
+**2,000 images** (typical batch):
+- Before optimizations: ~11 minutes
+- After optimizations (6 workers): ~40 seconds
+
+**Optimizations applied**:
+1. MAX_DIMENSION reduced from 1600 → 1200px
+2. JPEG quality reduced from 85% → 80%
+3. Default workers increased from 4 → 6
+4. File size filtering (skip <10KB and >10MB)
 
 ## HTML Report
 

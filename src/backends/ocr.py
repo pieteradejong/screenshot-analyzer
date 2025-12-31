@@ -4,8 +4,9 @@ OCR Backend: EasyOCR + regex heuristics for screenshot analysis.
 Fast, low memory (~2GB), but limited to pattern matching.
 
 Performance optimizations:
-- Smart image resizing for faster OCR (MAX_DIM=1600)
+- Aggressive image resizing (MAX_DIM=1200) for faster OCR
 - GPU acceleration via MPS (Apple Silicon) or CUDA
+- Lower JPEG quality (80%) for faster encoding
 """
 
 import io
@@ -28,11 +29,15 @@ import easyocr  # noqa: E402
 # =============================================================================
 
 # Maximum dimension (width or height) before resizing
-# 1600px balances OCR accuracy with speed
-MAX_DIMENSION = 1600
+# 1200px prioritizes speed over accuracy (use 1600 for higher quality)
+MAX_DIMENSION = 1200
 
 # Never scale below 50% of original (preserve text readability)
 MIN_SCALE = 0.5
+
+# File size filters (skip non-screenshot files)
+MIN_FILE_SIZE = 10 * 1024  # 10KB - skip tiny icons/thumbnails
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB - skip photos/videos
 
 
 def prepare_image_for_ocr(path: Path) -> tuple[bytes, int, int, bool]:
@@ -71,14 +76,14 @@ def prepare_image_for_ocr(path: Path) -> tuple[bytes, int, int, bool]:
             new_height = int(orig_height * scale)
             img_resized = img.resize((new_width, new_height), Image.LANCZOS)
 
-            # Convert to bytes
+            # Convert to bytes (lower quality = faster encoding)
             buffer = io.BytesIO()
-            img_resized.save(buffer, format="JPEG", quality=85)
+            img_resized.save(buffer, format="JPEG", quality=80)
             return buffer.getvalue(), orig_width, orig_height, True
         else:
             # No resize needed, convert to bytes
             buffer = io.BytesIO()
-            img.save(buffer, format="JPEG", quality=90)
+            img.save(buffer, format="JPEG", quality=80)
             return buffer.getvalue(), orig_width, orig_height, False
 
 
@@ -420,9 +425,9 @@ class OCRBackend(AnalysisBackend):
     EasyOCR + regex heuristics backend.
 
     Performance optimizations:
-    - Smart image resizing (MAX_DIM=1600, MIN_SCALE=0.5)
+    - Aggressive image resizing (MAX_DIM=1200, MIN_SCALE=0.5)
     - GPU acceleration via MPS or CUDA
-    - JPEG encoding for memory efficiency
+    - JPEG encoding at 80% quality for speed
     """
 
     def __init__(self):

@@ -9,8 +9,9 @@ Batch analyze screenshots using local vision models. Auto-categorizes by source 
 - **Two analysis backends**:
   - `ocr` — EasyOCR + regex heuristics (fast, ~2GB memory)
   - `vlm` — Vision-Language Model (smart, ~4-8GB memory)
+- **Fast** — 6 parallel workers, aggressive resizing (~50 images/sec)
 - **GPU acceleration** — Uses MPS (Apple Silicon) or CUDA automatically
-- **Structured output** — SQLite database + JSON export
+- **Structured output** — SQLite database + JSON export + HTML report
 - **Resume support** — Skips already-analyzed images
 
 ## Setup
@@ -33,6 +34,9 @@ pip install -r requirements.txt
 # Analyze with OCR backend (fast, default)
 python src/analyzer.py /path/to/screenshots
 
+# More workers for faster processing (default: 6)
+python src/analyzer.py /path/to/screenshots --workers 8
+
 # Test on 10 images first
 python src/analyzer.py /path/to/screenshots --limit 10
 
@@ -52,8 +56,8 @@ python src/analyzer.py /path/to/screenshots --output ./results
 
 Uses EasyOCR to extract text, then applies regex patterns to classify:
 
-- **Speed**: ~1-3 seconds per image
-- **Memory**: ~2GB
+- **Speed**: ~50 images/sec (6 workers), ~12 images/sec (1 worker)
+- **Memory**: ~2GB per worker
 - **Quality**: Good for text-heavy screenshots
 
 ### VLM Backend

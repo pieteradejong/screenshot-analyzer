@@ -179,7 +179,7 @@ def test_something(sample_data):
 Always resize large images before OCR:
 
 ```python
-MAX_DIMENSION = 1600  # Never process images larger than this
+MAX_DIMENSION = 1200  # Aggressive resize for speed (use 1600 for accuracy)
 MIN_SCALE = 0.5       # Never shrink more than 50%
 ```
 
@@ -187,6 +187,17 @@ MIN_SCALE = 0.5       # Never shrink more than 50%
 - OCR time scales with pixel count (4x pixels = 4x time)
 - Retina screenshots are 2x-3x larger than needed for text extraction
 - Text must remain ≥10px tall for accurate OCR
+
+### File Size Filtering
+
+Skip non-screenshot files early:
+
+```python
+MIN_FILE_SIZE = 10 * 1024       # Skip icons (<10KB)
+MAX_FILE_SIZE = 10 * 1024 * 1024  # Skip photos (>10MB)
+```
+
+This avoids loading and processing files that won't yield useful results.
 
 ### Multiprocessing vs Threading
 

@@ -17,9 +17,10 @@
 - [x] **Quality gates** — pytest test suite, ruff lint/format
 - [x] **HTML Report** — Self-contained report.html with filtering, search, modal
 - [x] **Easy run.sh** — Default directory via `SCREENSHOT_DIR` or `~/Pictures`
-- [x] **Performance: Smart Image Resizing** — MAX_DIM=1600, MIN_SCALE=0.5
-- [x] **Performance: Multiprocessing** — Separate EasyOCR reader per worker
+- [x] **Performance: Aggressive Image Resizing** — MAX_DIM=1200, JPEG 80%
+- [x] **Performance: Multiprocessing** — Separate EasyOCR reader per worker (default: 6)
 - [x] **Performance: Batch SQLite Commits** — Commit every 100 rows
+- [x] **Performance: File Size Filtering** — Skip <10KB icons, >10MB photos
 
 ## Now (doing in this pass)
 

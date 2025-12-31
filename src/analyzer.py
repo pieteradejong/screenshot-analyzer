@@ -7,14 +7,15 @@ Supports multiple backends:
 - vlm: Vision-Language Model (smart, higher memory)
 
 Performance optimizations:
-- Smart image resizing (MAX_DIM=1600) for faster OCR
-- Multiprocessing with separate model per worker
+- Aggressive image resizing (MAX_DIM=1200) for faster OCR
+- Multiprocessing with separate model per worker (default: 6 workers)
 - GPU acceleration via MPS (Apple Silicon) or CUDA
+- File size filtering (skip icons <10KB and photos >10MB)
 
 Usage:
     python analyzer.py /path/to/screenshots
     python analyzer.py /path/to/screenshots --limit 10
-    python analyzer.py /path/to/screenshots --workers 4
+    python analyzer.py /path/to/screenshots --workers 8
     python analyzer.py /path/to/screenshots --backend vlm
 """
 
@@ -30,8 +31,12 @@ from pathlib import Path
 
 SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
-# Default number of workers (use CPU count, but cap at 4 to avoid memory issues)
-DEFAULT_WORKERS = min(os.cpu_count() or 1, 4)
+# File size filters (skip non-screenshot files)
+MIN_FILE_SIZE = 10 * 1024  # 10KB - skip tiny icons/thumbnails
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB - skip photos/videos
+
+# Default number of workers (higher for 16GB+ machines)
+DEFAULT_WORKERS = min(os.cpu_count() or 1, 6)
 
 
 # =============================================================================
@@ -134,17 +139,47 @@ def save_result(conn: sqlite3.Connection, filepath: Path, analysis: dict, backen
     )
 
 
-def find_images(root: Path, skip_analyzed: set[str] | None = None) -> list[Path]:
-    """Recursively find all supported image files."""
+def find_images(
+    root: Path,
+    skip_analyzed: set[str] | None = None,
+    filter_size: bool = True,
+) -> tuple[list[Path], int, int]:
+    """
+    Recursively find all supported image files.
+
+    Args:
+        root: Directory to search
+        skip_analyzed: Set of filepaths to skip
+        filter_size: If True, skip files outside MIN/MAX_FILE_SIZE
+
+    Returns:
+        (images, skipped_small, skipped_large)
+    """
     skip_analyzed = skip_analyzed or set()
     images = []
+    skipped_small = 0
+    skipped_large = 0
 
     for path in root.rglob("*"):
         if path.suffix.lower() in SUPPORTED_EXTENSIONS:
-            if str(path) not in skip_analyzed:
-                images.append(path)
+            if str(path) in skip_analyzed:
+                continue
 
-    return images
+            if filter_size:
+                try:
+                    size = path.stat().st_size
+                    if size < MIN_FILE_SIZE:
+                        skipped_small += 1
+                        continue
+                    if size > MAX_FILE_SIZE:
+                        skipped_large += 1
+                        continue
+                except OSError:
+                    continue
+
+            images.append(path)
+
+    return images, skipped_small, skipped_large
 
 
 def get_already_analyzed(conn: sqlite3.Connection) -> set[str]:
@@ -192,11 +227,11 @@ Backends:
 Performance:
   --workers controls parallel processing (default: {DEFAULT_WORKERS})
   Each worker loads its own model (~2GB RAM each)
-  Images are resized to max 1600px for faster OCR
+  Images resized to max 1200px, files <10KB or >10MB skipped
 
 Examples:
   %(prog)s /path/to/screenshots
-  %(prog)s /path/to/screenshots --workers 4
+  %(prog)s /path/to/screenshots --workers 8
   %(prog)s /path/to/screenshots --limit 10 --backend ocr
   %(prog)s /path/to/screenshots --backend vlm
 """,
@@ -271,14 +306,14 @@ Examples:
 
     # For dry-run, we don't need to create output dir or init backend
     if args.dry_run:
-        all_images = find_images(args.directory)
+        all_images, skipped_small, skipped_large = find_images(args.directory)
         if args.limit:
             all_images = all_images[: args.limit]
 
         # Estimate time based on backend and workers
         if args.backend == "ocr":
-            # With resizing: ~0.1-0.2s per image per worker
-            time_per_img = 0.15
+            # With aggressive resizing: ~0.05-0.1s per image per worker
+            time_per_img = 0.08
         else:
             time_per_img = 3.0
 
@@ -289,8 +324,12 @@ Examples:
         print(f"  Backend: {args.backend}")
         print(f"  Workers: {args.workers}")
         print(f"  Total images found: {len(all_images)}")
+        if skipped_small or skipped_large:
+            print(
+                f"  Skipped: {skipped_small} tiny (<10KB), {skipped_large} large (>10MB)"
+            )
         print(f"  Would process: {len(all_images)} images")
-        print(f"  Estimated time: ~{est_time / 60:.0f} minutes")
+        print(f"  Estimated time: ~{est_time / 60:.1f} minutes")
         print(f"  Output would be: {output_dir}")
         print()
         print("Run without --dry-run to process.")
@@ -305,12 +344,14 @@ Examples:
 
     # Find images to process
     skip_set = get_already_analyzed(conn) if args.skip_existing else set()
-    images = find_images(args.directory, skip_set)
+    images, skipped_small, skipped_large = find_images(args.directory, skip_set)
 
     if args.limit:
         images = images[: args.limit]
 
     print(f"Found {len(images)} images to analyze")
+    if skipped_small or skipped_large:
+        print(f"Skipped: {skipped_small} tiny (<10KB), {skipped_large} large (>10MB)")
     print(f"Backend: {args.backend}")
     print(f"Workers: {args.workers}")
     print(f"Output: {output_dir}")
