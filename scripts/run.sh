@@ -21,16 +21,8 @@ cd "$PROJECT_ROOT"
 # CONFIGURATION
 # =============================================================================
 
-# Default directory: SCREENSHOT_DIR env var, or ~/Pictures, or ~/Desktop
-if [ -n "$SCREENSHOT_DIR" ]; then
-    DEFAULT_DIR="$SCREENSHOT_DIR"
-elif [ -d "$HOME/Pictures" ]; then
-    DEFAULT_DIR="$HOME/Pictures"
-elif [ -d "$HOME/Desktop" ]; then
-    DEFAULT_DIR="$HOME/Desktop"
-else
-    DEFAULT_DIR="."
-fi
+# Default directory: SCREENSHOT_DIR env var, or ~/screenshots
+DEFAULT_DIR="${SCREENSHOT_DIR:-$HOME/screenshots}"
 
 # =============================================================================
 # SETUP
