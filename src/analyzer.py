@@ -12,11 +12,16 @@ Performance optimizations:
 - GPU acceleration via MPS (Apple Silicon) or CUDA
 - File size filtering (skip icons <10KB and photos >10MB)
 
+Configuration (via .env file):
+    HOME_DIR=/Users/yourname           # Secret base path
+    PROJECT_DIR=dev/projects/...       # Project location (relative to HOME_DIR)
+    SOURCE_DIRS=screenshots            # Directories to scan (relative to HOME_DIR)
+
 Usage:
-    python analyzer.py /path/to/screenshots
-    python analyzer.py /path/to/screenshots --limit 10
-    python analyzer.py /path/to/screenshots --workers 8
-    python analyzer.py /path/to/screenshots --backend vlm
+    python analyzer.py                 # Uses SOURCE_DIRS from .env
+    python analyzer.py /path/to/dir    # Override with specific directory
+    python analyzer.py --limit 10
+    python analyzer.py --backend vlm
 """
 
 import argparse
@@ -29,6 +34,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Load .env file from project root
+load_dotenv(Path(__file__).parent.parent / ".env")
+
 SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 # File size filters (skip non-screenshot files)
@@ -37,6 +47,33 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB - skip photos/videos
 
 # Default number of workers (higher for 16GB+ machines)
 DEFAULT_WORKERS = min(os.cpu_count() or 1, 6)
+
+
+# =============================================================================
+# ENVIRONMENT CONFIGURATION
+# =============================================================================
+
+
+def get_source_dirs() -> list[Path]:
+    """Resolve SOURCE_DIRS relative to HOME_DIR from environment."""
+    home_dir = os.environ.get("HOME_DIR", "")
+    source_dirs = os.environ.get("SOURCE_DIRS", "")
+
+    if not home_dir or not source_dirs:
+        return []
+
+    home = Path(home_dir)
+    return [home / d.strip() for d in source_dirs.split(":") if d.strip()]
+
+
+def get_output_dir() -> Path:
+    """Get output directory from HOME_DIR/PROJECT_DIR/analysis."""
+    home_dir = os.environ.get("HOME_DIR", "")
+    project_dir = os.environ.get("PROJECT_DIR", "")
+
+    if home_dir and project_dir:
+        return Path(home_dir) / project_dir / "analysis"
+    return Path("analysis")  # fallback to current directory
 
 
 # =============================================================================
@@ -140,15 +177,15 @@ def save_result(conn: sqlite3.Connection, filepath: Path, analysis: dict, backen
 
 
 def find_images(
-    root: Path,
+    directories: list[Path],
     skip_analyzed: set[str] | None = None,
     filter_size: bool = True,
 ) -> tuple[list[Path], int, int]:
     """
-    Recursively find all supported image files.
+    Find all supported image files in the given directories (flat, no recursion).
 
     Args:
-        root: Directory to search
+        directories: List of directories to search (each scanned flat)
         skip_analyzed: Set of filepaths to skip
         filter_size: If True, skip files outside MIN/MAX_FILE_SIZE
 
@@ -160,8 +197,18 @@ def find_images(
     skipped_small = 0
     skipped_large = 0
 
-    for path in root.rglob("*"):
-        if path.suffix.lower() in SUPPORTED_EXTENSIONS:
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+
+        # Flat scan - only direct children, no recursion
+        for path in directory.iterdir():
+            if not path.is_file():
+                continue
+
+            if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                continue
+
             if str(path) in skip_analyzed:
                 continue
 
@@ -229,16 +276,27 @@ Performance:
   Each worker loads its own model (~2GB RAM each)
   Images resized to max 1200px, files <10KB or >10MB skipped
 
+Configuration:
+  Set SOURCE_DIRS in .env to configure default directories.
+  Output goes to PROJECT_DIR/analysis/ by default.
+
 Examples:
-  %(prog)s /path/to/screenshots
-  %(prog)s /path/to/screenshots --workers 8
-  %(prog)s /path/to/screenshots --limit 10 --backend ocr
-  %(prog)s /path/to/screenshots --backend vlm
+  %(prog)s                           # Use SOURCE_DIRS from .env
+  %(prog)s /path/to/screenshots      # Override with specific directory
+  %(prog)s --workers 8
+  %(prog)s --limit 10 --backend ocr
 """,
     )
-    parser.add_argument("directory", type=Path, help="Directory containing screenshots")
     parser.add_argument(
-        "--output", type=Path, help="Output directory (default: <directory>/_analysis)"
+        "directory",
+        type=Path,
+        nargs="?",
+        help="Directory to scan (overrides SOURCE_DIRS from .env)",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Output directory (default: PROJECT_DIR/analysis)",
     )
     parser.add_argument("--limit", type=int, help="Limit number of images to process")
     parser.add_argument(
@@ -287,26 +345,46 @@ Examples:
 
     args = parser.parse_args()
 
-    # Validate directory
-    if not args.directory.is_dir():
-        print(f"Error: {args.directory} is not a directory")
-        sys.exit(1)
+    # Resolve directories to scan
+    if args.directory:
+        # Command-line argument overrides .env
+        if not args.directory.is_dir():
+            print(f"Error: {args.directory} is not a directory")
+            sys.exit(1)
+        source_directories = [args.directory]
+    else:
+        # Use SOURCE_DIRS from .env
+        source_directories = get_source_dirs()
+        if not source_directories:
+            print("Error: No directories to scan.")
+            print("Either provide a directory argument or set SOURCE_DIRS in .env")
+            print("  Example: python analyzer.py /path/to/screenshots")
+            print("  Or set: SOURCE_DIRS=screenshots in your .env file")
+            sys.exit(1)
+
+        # Validate all directories exist
+        missing = [d for d in source_directories if not d.is_dir()]
+        if missing:
+            print("Error: The following directories do not exist:")
+            for d in missing:
+                print(f"  - {d}")
+            sys.exit(1)
 
     # Debug info
     if args.verbose:
         print("=== Debug Info ===")
-        print(f"  Directory: {args.directory}")
+        print(f"  Source directories: {[str(d) for d in source_directories]}")
         print(f"  Backend: {args.backend}")
         print(f"  Workers: {args.workers}")
         print(f"  Dry run: {args.dry_run}")
         print()
 
     # Setup output
-    output_dir = args.output or args.directory / "_analysis"
+    output_dir = args.output or get_output_dir()
 
     # For dry-run, we don't need to create output dir or init backend
     if args.dry_run:
-        all_images, skipped_small, skipped_large = find_images(args.directory)
+        all_images, skipped_small, skipped_large = find_images(source_directories)
         if args.limit:
             all_images = all_images[: args.limit]
 
@@ -320,7 +398,7 @@ Examples:
         est_time = (len(all_images) * time_per_img) / args.workers
 
         print("=== Dry Run ===")
-        print(f"  Directory: {args.directory}")
+        print(f"  Directories: {[str(d) for d in source_directories]}")
         print(f"  Backend: {args.backend}")
         print(f"  Workers: {args.workers}")
         print(f"  Total images found: {len(all_images)}")
@@ -344,12 +422,13 @@ Examples:
 
     # Find images to process
     skip_set = get_already_analyzed(conn) if args.skip_existing else set()
-    images, skipped_small, skipped_large = find_images(args.directory, skip_set)
+    images, skipped_small, skipped_large = find_images(source_directories, skip_set)
 
     if args.limit:
         images = images[: args.limit]
 
     print(f"Found {len(images)} images to analyze")
+    print(f"Scanning: {[str(d) for d in source_directories]}")
     if skipped_small or skipped_large:
         print(f"Skipped: {skipped_small} tiny (<10KB), {skipped_large} large (>10MB)")
     print(f"Backend: {args.backend}")

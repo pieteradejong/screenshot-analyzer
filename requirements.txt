@@ -2,6 +2,10 @@
 easyocr>=1.7.0
 torch>=2.0.0
 pillow>=10.0.0
+python-dotenv>=1.0.0
+python-dotenv>=1.0.0
+python-dotenv>=1.0.0
+python-dotenv>=1.0.0
 
 # Optional: VLM backend (install if using --backend vlm)
 # pip install transformers accelerate

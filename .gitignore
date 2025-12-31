@@ -108,5 +108,5 @@ temp/
 tmp/
 
 # Screenshot analyzer outputs
-_analysis/
+analysis/
 *.db
